@@ -70,7 +70,10 @@ def load_quotes() -> List[str]:
 
 def save_quotes_atomic(quotes: List[str]) -> None:
     os.makedirs(os.path.dirname(QUOTES_FILE) or ".", exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(prefix="quotes_", suffix=".json", dir=os.path.dirname(QUOTES_FILE) or ".")
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        prefix="quotes_", suffix=".json",
+        dir=os.path.dirname(QUOTES_FILE) or "."
+    )
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp:
             json.dump(quotes, tmp, ensure_ascii=False, indent=2)
@@ -81,6 +84,12 @@ def save_quotes_atomic(quotes: List[str]) -> None:
 
 QUOTES = load_quotes()
 
+# nyckelord som triggar auto-svar (endast i daily-quotes-kanalen)
+KEYWORDS = {
+    "sad", "depressed", "anxious", "anxiety",
+    "panic", "stress", "lonely", "tired", "overwhelmed"
+}
+
 def random_quote() -> str:
     return random.choice(QUOTES)
 
@@ -89,49 +98,83 @@ def random_quote() -> str:
 async def on_ready():
     await bot.tree.sync()
     print(f"Logged in as {bot.user}")
+
+    # starta bara loops om vi har ett giltigt kanal-ID
     if DAILY_CHANNEL_ID:
         morning_quote.start()
         evening_quote.start()
 
-KEYWORDS = {"sad", "depressed", "anxious", "anxiety", "panic", "stress", "lonely", "tired", "overwhelmed"}
+    # sätt en liten status
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.listening,
+            name="daily mental health reminders"
+        )
+    )
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
-    if any(k in message.content.lower() for k in KEYWORDS):
-        await message.channel.send(f"💛 {random_quote()}")
+
+    # bara reagera i daily-quotes-kanalen
+    if message.channel.id == DAILY_CHANNEL_ID:
+        if any(k in message.content.lower() for k in KEYWORDS):
+            await message.channel.send(f"💛 {random_quote()}")
+
+    # låt kommandon fungera som vanligt
     await bot.process_commands(message)
 
 # ---------- SLASH COMMANDS ----------
-@bot.tree.command(name="quote", description="Get an encouraging quote")
-async def quote(interaction: discord.Interaction):
-    await interaction.response.send_message(f"🌟 {random_quote()}")
+@bot.tree.command(name="quote", description="Get a motivational quote")
+async def quote_command(interaction: discord.Interaction):
+    # begränsa kommandot till daily-quotes-kanalen
+    if interaction.channel_id != DAILY_CHANNEL_ID:
+        await interaction.response.send_message(
+            "❌ This command only works in the daily-quotes channel!",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(f"💛 {random_quote()}")
 
 @bot.tree.command(name="add_quote", description="Add your own quote (saved permanently)")
 @app_commands.describe(text="Your quote text")
 async def add_quote(interaction: discord.Interaction, text: str):
     t = text.strip()
     if len(t) < 6:
-        await interaction.response.send_message("Please write a slightly longer quote 🙏", ephemeral=True)
+        await interaction.response.send_message(
+            "Please write a slightly longer quote 🙏",
+            ephemeral=True
+        )
         return
+
     async with quotes_lock:
         if t not in QUOTES:
             QUOTES.append(t)
             save_quotes_atomic(QUOTES)
-    await interaction.response.send_message("Thanks! Your quote was saved permanently ✨", ephemeral=True)
+
+    await interaction.response.send_message(
+        "Thanks! Your quote was saved permanently ✨",
+        ephemeral=True
+    )
 
 # ---------- DAILY POSTS ----------
 @tasks.loop(time=dt.time(hour=9, tzinfo=TZ))
 async def morning_quote():
     channel = bot.get_channel(DAILY_CHANNEL_ID)
     if channel:
-        await channel.send(f"@here 🌅 Good morning! Here's your daily reminder:\n> {random_quote()}")
+        await channel.send(
+            f"@here 🌅 Good morning! Here's your daily reminder:\n> {random_quote()}"
+        )
+
 @tasks.loop(time=dt.time(hour=21, tzinfo=TZ))
 async def evening_quote():
     channel = bot.get_channel(DAILY_CHANNEL_ID)
     if channel:
-        await channel.send(f"@here 🌙 Good evening! Before you rest, remember:\n> {random_quote()}")
-
+        await channel.send(
+            f"@here 🌙 Good evening! Before you rest, remember:\n> {random_quote()}"
+        )
 
 # ---------- RUN ----------
 if not TOKEN:
